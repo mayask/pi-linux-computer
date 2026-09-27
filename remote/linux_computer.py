@@ -11,7 +11,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Dict, List, Optional, Tuple
 
 import pyatspi
 
@@ -56,14 +56,14 @@ def node_at_path(root, node_id: str):
     return node
 
 
-def node_states(node) -> list[str]:
+def node_states(node) -> List[str]:
     state_set = safe(node.getState, None)
     if state_set is None:
         return []
     return [name for name, value in STATE_CONSTANTS if safe(lambda value=value: state_set.contains(value), False)]
 
 
-def node_bounds(node) -> list[int] | None:
+def node_bounds(node) -> Optional[List[int]]:
     component = safe(node.queryComponent, None)
     if component is None:
         return None
@@ -75,7 +75,7 @@ def node_bounds(node) -> list[int] | None:
     return [int(extents.x), int(extents.y), int(extents.width), int(extents.height)]
 
 
-def node_actions(node) -> list[str]:
+def node_actions(node) -> List[str]:
     action = safe(node.queryAction, None)
     if action is None:
         return []
@@ -83,7 +83,7 @@ def node_actions(node) -> list[str]:
     return [safe(lambda i=i: action.getName(i), "") for i in range(count)]
 
 
-def node_text(node, max_chars: int) -> str | None:
+def node_text(node, max_chars: int) -> Optional[str]:
     text_iface = safe(node.queryText, None)
     if text_iface is None:
         return None
@@ -95,7 +95,7 @@ def node_text(node, max_chars: int) -> str | None:
     return text or None
 
 
-def windows() -> list[dict[str, Any]]:
+def windows() -> List[Dict[str, Any]]:
     try:
         result = subprocess.run(["wmctrl", "-lx"], check=False, capture_output=True, text=True, timeout=5)
     except Exception:
@@ -108,7 +108,7 @@ def windows() -> list[dict[str, Any]]:
     return output
 
 
-def snapshot(params: dict[str, Any]) -> dict[str, Any]:
+def snapshot(params: Dict[str, Any]) -> Dict[str, Any]:
     max_depth = max(1, min(int(params.get("maxDepth", 8)), 20))
     max_nodes = max(10, min(int(params.get("maxNodes", 300)), 2000))
     max_text = max(40, min(int(params.get("maxTextChars", 1200)), 10000))
@@ -116,10 +116,10 @@ def snapshot(params: dict[str, Any]) -> dict[str, Any]:
     visible_only = bool(params.get("visibleOnly", True))
 
     root = pyatspi.Registry.getDesktop(0)
-    nodes: list[dict[str, Any]] = []
+    nodes: List[Dict[str, Any]] = []
     truncated = False
 
-    def visit(node, path: list[int], depth: int):
+    def visit(node, path: List[int], depth: int):
         nonlocal truncated
         if len(nodes) >= max_nodes:
             truncated = True
@@ -135,7 +135,7 @@ def snapshot(params: dict[str, Any]) -> dict[str, Any]:
         showing = "showing" in states or role == "desktop frame" or (role == "application" and child_count > 0)
 
         if not visible_only or showing or text or actions:
-            item: dict[str, Any] = {
+            item: Dict[str, Any] = {
                 "id": "/".join(str(i) for i in path) or "root",
                 "depth": depth,
                 "role": role,
@@ -181,7 +181,7 @@ def focus_node(node) -> bool:
     return bool(component is not None and safe(component.grabFocus, False))
 
 
-def invoke_node(node, requested: str | None = None) -> str:
+def invoke_node(node, requested: Optional[str] = None) -> str:
     action = safe(node.queryAction, None)
     if action is None:
         raise RuntimeError("Node exposes no accessible actions")
@@ -202,7 +202,7 @@ def click_at(x: int, y: int, button: int = 1):
     subprocess.run(["xdotool", "mousemove", str(x), str(y), "click", str(button)], check=True, timeout=10)
 
 
-def act(params: dict[str, Any]) -> dict[str, Any]:
+def act(params: Dict[str, Any]) -> Dict[str, Any]:
     action_name = str(params.get("action", ""))
     node_id = params.get("nodeId")
     root = pyatspi.Registry.getDesktop(0)
@@ -308,7 +308,7 @@ def find_terminal_context():
     raise RuntimeError("No visible terminal was found through AT-SPI")
 
 
-def read_clipboard() -> tuple[bool, bytes]:
+def read_clipboard() -> Tuple[bool, bytes]:
     result = subprocess.run(
         ["xclip", "-selection", "clipboard", "-o"],
         check=False,
@@ -336,7 +336,7 @@ def write_clipboard(value: bytes):
         raise RuntimeError("Could not restore clipboard")
 
 
-def clipboard_scrollback() -> tuple[str, bool]:
+def clipboard_scrollback() -> Tuple[str, bool]:
     app, terminal = find_terminal_context()
     select_all = next(
         (
@@ -375,7 +375,7 @@ def clipboard_scrollback() -> tuple[str, bool]:
     return scrollback, restored
 
 
-def tmux_scrollback(requested_pane: str | None = None) -> tuple[str, str]:
+def tmux_scrollback(requested_pane: Optional[str] = None) -> Tuple[str, str]:
     pane = requested_pane
     if not pane:
         listed = subprocess.run(
@@ -422,7 +422,7 @@ def prompt_match(line: str):
     return None
 
 
-def extract_last_command(scrollback: str) -> tuple[str | None, str]:
+def extract_last_command(scrollback: str) -> Tuple[Optional[str], str]:
     lines = scrollback.replace("\r\n", "\n").replace("\r", "\n").split("\n")
     prompt_lines = [(index, prompt_match(line)) for index, line in enumerate(lines)]
     prompt_lines = [(index, match) for index, match in prompt_lines if match is not None]
@@ -441,7 +441,7 @@ def extract_last_command(scrollback: str) -> tuple[str | None, str]:
     return None, ""
 
 
-def terminal_capture(params: dict[str, Any]) -> dict[str, Any]:
+def terminal_capture(params: Dict[str, Any]) -> Dict[str, Any]:
     strategy = str(params.get("strategy", "auto"))
     tmux_pane = params.get("tmuxPane")
     include_scrollback = bool(params.get("includeScrollback", False))

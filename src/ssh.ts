@@ -12,14 +12,15 @@ export function shellQuote(value: string): string {
 }
 
 function sshArgs(target: TargetConfig): string[] {
-  return [
-    "-i", target.identityFile,
+  const args = [
     "-p", String(target.port ?? 22),
     "-o", "BatchMode=yes",
     "-o", "StrictHostKeyChecking=yes",
-    "-o", `UserKnownHostsFile=${target.knownHostsFile}`,
-    `${target.user}@${target.host}`,
   ];
+  if (target.identityFile) args.push("-i", target.identityFile);
+  if (target.knownHostsFile) args.push("-o", `UserKnownHostsFile=${target.knownHostsFile}`);
+  args.push(`${target.user}@${target.host}`);
+  return args;
 }
 
 export async function sshRun(

@@ -4,6 +4,18 @@
   "description": "Structured Linux VM desktop control tools for Pi",
   "type": "module",
   "private": true,
+  "license": "MIT",
+  "homepage": "https://github.com/mayask/pi-linux-computer#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mayask/pi-linux-computer.git"
+  },
+  "bugs": {
+    "url": "https://github.com/mayask/pi-linux-computer/issues"
+  },
+  "engines": {
+    "node": ">=20"
+  },
   "keywords": [
     "pi-package",
     "computer-use",

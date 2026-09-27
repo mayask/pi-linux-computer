@@ -16,17 +16,20 @@ for key, value in {
     'HOST': t['host'],
     'PORT': str(t.get('port', 22)),
     'USER': t['user'],
-    'KEY': os.path.expanduser(t['identityFile']),
-    'KNOWN': os.path.expanduser(t['knownHostsFile']),
+    'KEY': os.path.expanduser(t['identityFile']) if t.get('identityFile') else '',
+    'KNOWN': os.path.expanduser(t['knownHostsFile']) if t.get('knownHostsFile') else '',
     'DISPLAY_VALUE': t['display'],
     'XAUTHORITY_VALUE': t['xauthority'],
     'DBUS_VALUE': t['dbusAddress'],
-    'HELPER': t.get('helperPath', f"/home/{t['user']}/.local/share/pi-linux-computer/linux_computer.py"),
+    'HELPER': t.get('helperPath', ".local/share/pi-linux-computer/linux_computer.py"),
 }.items(): print(f'{key}={shlex.quote(value)}')
 PY
 )"
 
-ssh_args=(-i "$KEY" -p "$PORT" -o BatchMode=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$KNOWN" "$USER@$HOST")
+ssh_args=(-p "$PORT" -o BatchMode=yes -o StrictHostKeyChecking=yes)
+[[ -n "$KEY" ]] && ssh_args+=(-i "$KEY")
+[[ -n "$KNOWN" ]] && ssh_args+=(-o "UserKnownHostsFile=$KNOWN")
+ssh_args+=("$USER@$HOST")
 remote_dir=${HELPER%/*}
 ssh "${ssh_args[@]}" "umask 077; mkdir -p '$remote_dir'; cat > '$HELPER'; chmod 700 '$HELPER'" < "$project_dir/remote/linux_computer.py"
 printf '%s' '{"operation":"ping","params":{}}' | ssh "${ssh_args[@]}" "DISPLAY='$DISPLAY_VALUE' XAUTHORITY='$XAUTHORITY_VALUE' DBUS_SESSION_BUS_ADDRESS='$DBUS_VALUE' python3 '$HELPER'"

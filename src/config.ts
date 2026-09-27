@@ -6,8 +6,8 @@ export interface TargetConfig {
   host: string;
   port?: number;
   user: string;
-  identityFile: string;
-  knownHostsFile: string;
+  identityFile?: string;
+  knownHostsFile?: string;
   display: string;
   xauthority: string;
   dbusAddress: string;
@@ -38,9 +38,9 @@ export function loadConfig(path = process.env.PI_LINUX_COMPUTER_CONFIG ?? DEFAUL
     targets[name] = {
       ...target,
       port: target.port ?? 22,
-      identityFile: expandHome(target.identityFile),
-      knownHostsFile: expandHome(target.knownHostsFile),
-      helperPath: target.helperPath ?? `/home/${target.user}/.local/share/pi-linux-computer/linux_computer.py`,
+      identityFile: target.identityFile ? expandHome(target.identityFile) : undefined,
+      knownHostsFile: target.knownHostsFile ? expandHome(target.knownHostsFile) : undefined,
+      helperPath: target.helperPath ?? ".local/share/pi-linux-computer/linux_computer.py",
     };
   }
 
