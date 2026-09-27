@@ -1,0 +1,13 @@
+{
+  "debian13": {
+    "host": "127.0.0.1",
+    "port": 2222,
+    "user": "piagent",
+    "identityFile": "~/.ssh/debian13_agent_ed25519",
+    "knownHostsFile": "~/.ssh/debian13_agent_known_hosts",
+    "display": ":10",
+    "xauthority": "/home/piagent/.Xauthority",
+    "dbusAddress": "unix:path=/run/user/1001/bus",
+    "helperPath": "/home/piagent/.local/share/pi-linux-computer/linux_computer.py"
+  }
+}

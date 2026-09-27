@@ -1,0 +1,34 @@
+{
+  "name": "pi-linux-computer",
+  "version": "0.1.0",
+  "description": "Structured Linux VM desktop control tools for Pi",
+  "type": "module",
+  "private": true,
+  "keywords": [
+    "pi-package",
+    "computer-use",
+    "accessibility",
+    "linux"
+  ],
+  "pi": {
+    "extensions": [
+      "./src/extension.ts"
+    ],
+    "skills": [
+      "./skills"
+    ]
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test:remote": "./scripts/integration-test.sh"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@types/node": "latest",
+    "typescript": "latest"
+  }
+}
