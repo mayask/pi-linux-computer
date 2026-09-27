@@ -33,6 +33,21 @@ interface SnapshotResult {
   error?: string;
 }
 
+interface TerminalCaptureResult {
+  ok: boolean;
+  strategy: "tmux" | "clipboard";
+  tmuxPane: string | null;
+  clipboardRestored: boolean | null;
+  command: string | null;
+  output: string;
+  truncated: boolean;
+  capturePath: string | null;
+  scrollbackChars: number;
+  scrollback?: string;
+  scrollbackTruncated?: boolean;
+  error?: string;
+}
+
 function remoteError(prefix: string, exitCode: number, stderr: Buffer): Error {
   const message = stderr.toString("utf8").trim();
   return new Error(`${prefix} failed with exit code ${exitCode}${message ? `: ${message}` : ""}`);
@@ -56,7 +71,7 @@ async function ensureHelper(name: string, target: TargetConfig, signal?: AbortSi
 async function bridgeCall<T>(
   name: string,
   target: TargetConfig,
-  operation: "snapshot" | "act" | "ping",
+  operation: "snapshot" | "act" | "terminal_capture" | "ping",
   params: Record<string, unknown>,
   signal?: AbortSignal,
 ): Promise<T> {
@@ -65,7 +80,7 @@ async function bridgeCall<T>(
   const result = await sshRun(target, command, {
     input: JSON.stringify({ operation, params }),
     signal,
-    timeoutMs: operation === "act" ? 45_000 : 30_000,
+    timeoutMs: operation === "act" || operation === "terminal_capture" ? 45_000 : 30_000,
   });
   if (result.exitCode !== 0) throw remoteError(`Desktop ${operation}`, result.exitCode, result.stderr);
   try {
@@ -172,6 +187,65 @@ export default function linuxComputerExtension(pi: ExtensionAPI) {
       return {
         content: [{ type: "text", text: JSON.stringify({ target: target.name, ...result }, null, 2) }],
         details: { target: target.name, ...result },
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: "linux_vm_terminal_capture",
+    label: "Capture Linux VM terminal output",
+    description:
+      "Capture the last command and its complete retained output from a visible Linux VM terminal without rerunning it. Auto mode prefers an active attached tmux pane, then safely falls back to Terminal Select All/copy while restoring the prior text clipboard. Use this instead of screenshots or viewport-only AT-SPI text for off-screen terminal output.",
+    parameters: Type.Object({
+      target: Type.Optional(Type.String({ description: "Configured VM target name" })),
+      strategy: Type.Optional(StringEnum(["auto", "tmux", "clipboard"] as const)),
+      tmuxPane: Type.Optional(Type.String({ description: "Explicit tmux target such as session:0.0" })),
+      includeScrollback: Type.Optional(Type.Boolean({ description: "Also return retained raw terminal scrollback", default: false })),
+      maxChars: Type.Optional(Type.Integer({ minimum: 1000, maximum: 45000, default: 45000 })),
+    }),
+    executionMode: "sequential",
+    async execute(_id, params, signal) {
+      const target = currentTarget(params.target);
+      const capture = await bridgeCall<TerminalCaptureResult>(
+        target.name,
+        target.config,
+        "terminal_capture",
+        params,
+        signal,
+      );
+      if (!capture.ok) throw new Error(capture.error ?? "Terminal capture failed");
+
+      const lines = [
+        `target: ${target.name}`,
+        `strategy: ${capture.strategy}${capture.tmuxPane ? ` (${capture.tmuxPane})` : ""}`,
+        `command: ${capture.command ?? "<could not identify command boundary>"}`,
+        "output:",
+        capture.output,
+      ];
+      if (capture.truncated && capture.capturePath) {
+        lines.push(`... output truncated; complete output saved in VM at ${capture.capturePath}`);
+      }
+      if (capture.strategy === "clipboard") {
+        lines.push(`clipboard restored: ${capture.clipboardRestored ? "yes" : "no"}`);
+      }
+      if (capture.scrollback !== undefined) {
+        lines.push("raw scrollback:", capture.scrollback);
+        if (capture.scrollbackTruncated) lines.push("... raw scrollback truncated ...");
+      }
+
+      const text = lines.join("\n");
+      return {
+        content: [{ type: "text", text: text.slice(0, MAX_TEXT_RESULT) }],
+        details: {
+          target: target.name,
+          strategy: capture.strategy,
+          tmuxPane: capture.tmuxPane,
+          command: capture.command,
+          truncated: capture.truncated || text.length > MAX_TEXT_RESULT,
+          capturePath: capture.capturePath,
+          clipboardRestored: capture.clipboardRestored,
+          scrollbackChars: capture.scrollbackChars,
+        },
       };
     },
   });

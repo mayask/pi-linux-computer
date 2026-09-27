@@ -31,4 +31,12 @@ remote_dir=${HELPER%/*}
 ssh "${ssh_args[@]}" "umask 077; mkdir -p '$remote_dir'; cat > '$HELPER'; chmod 700 '$HELPER'" < "$project_dir/remote/linux_computer.py"
 printf '%s' '{"operation":"ping","params":{}}' | ssh "${ssh_args[@]}" "DISPLAY='$DISPLAY_VALUE' XAUTHORITY='$XAUTHORITY_VALUE' DBUS_SESSION_BUS_ADDRESS='$DBUS_VALUE' python3 '$HELPER'"
 printf '%s' '{"operation":"snapshot","params":{"maxDepth":8,"maxNodes":300,"includeText":true}}' | ssh "${ssh_args[@]}" "DISPLAY='$DISPLAY_VALUE' XAUTHORITY='$XAUTHORITY_VALUE' DBUS_SESSION_BUS_ADDRESS='$DBUS_VALUE' python3 '$HELPER'" | python3 -c 'import json,sys; d=json.load(sys.stdin); print("snapshot revision={} nodes={} truncated={}".format(d["revision"], len(d["nodes"]), d["truncated"]))'
+printf '%s' '{"operation":"terminal_capture","params":{"strategy":"clipboard","maxChars":45000}}' | ssh "${ssh_args[@]}" "DISPLAY='$DISPLAY_VALUE' XAUTHORITY='$XAUTHORITY_VALUE' DBUS_SESSION_BUS_ADDRESS='$DBUS_VALUE' python3 '$HELPER'" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["ok"] and d["command"]; assert d["clipboardRestored"]; print("terminal capture command={!r} output_chars={} strategy={}".format(d["command"], len(d["output"]), d["strategy"]))'
+tmux_session="pi-linux-computer-test-$$"
+cleanup_tmux() { ssh "${ssh_args[@]}" "tmux kill-session -t '$tmux_session'" >/dev/null 2>&1 || true; }
+trap cleanup_tmux EXIT
+ssh "${ssh_args[@]}" "tmux new-session -d -s '$tmux_session'; tmux send-keys -t '$tmux_session:0.0' 'printf \"TMUX_CAPTURE_OK\\n\"' Enter; sleep 1"
+printf '{"operation":"terminal_capture","params":{"strategy":"tmux","tmuxPane":"%s:0.0"}}' "$tmux_session" | ssh "${ssh_args[@]}" "DISPLAY='$DISPLAY_VALUE' XAUTHORITY='$XAUTHORITY_VALUE' DBUS_SESSION_BUS_ADDRESS='$DBUS_VALUE' python3 '$HELPER'" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["strategy"] == "tmux" and d["output"] == "TMUX_CAPTURE_OK"; print("tmux capture command={!r} output={!r}".format(d["command"], d["output"]))'
+cleanup_tmux
+trap - EXIT
 echo "integration test passed for $TARGET_NAME"

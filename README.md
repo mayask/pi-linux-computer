@@ -16,13 +16,14 @@ Wayland-native input and browser-specific DOM automation are future adapters.
 
 - `linux_vm_observe` — compact accessibility tree and visible text
 - `linux_vm_act` — invoke, focus, click, type, key, scroll, or wait
+- `linux_vm_terminal_capture` — complete retained output of the last visible terminal command
 - `linux_vm_screenshot` — PNG fallback for vision-capable models
 - `linux_vm_exec` — remote shell over SSH
 
 ## VM dependencies
 
 ```bash
-sudo apt install python3-pyatspi at-spi2-core xdotool scrot wmctrl openssh-server
+sudo apt install python3-pyatspi at-spi2-core xdotool scrot wmctrl xclip tmux openssh-server
 ```
 
 The target desktop session must expose `DISPLAY`, `XAUTHORITY`, and its user D-Bus socket. XRDP creates an Xorg session suitable for this.
@@ -70,9 +71,9 @@ The initial acceptance task is entirely text-driven:
 2. Locate or launch Terminal.
 3. Focus the terminal and type `uname -a`.
 4. Observe again.
-5. Read the command output from the terminal's accessible text.
+5. Capture the complete retained output with `linux_vm_terminal_capture`.
 
-No screenshot should be needed.
+No screenshot should be needed. Auto capture prefers a single active attached tmux pane. For an existing non-tmux terminal it invokes semantic Select All/copy and restores the previous text clipboard. It never reruns the command. Large outputs are truncated in model context and saved to a mode-0600 file inside the VM.
 
 ## Security
 
