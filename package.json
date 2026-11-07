@@ -1,43 +1,60 @@
 {
-  "name": "pi-linux-computer",
-  "version": "0.2.0",
-  "description": "Structured Linux VM desktop control tools for Pi",
+  "name": "linux-computer",
+  "version": "0.3.0",
+  "description": "Per-session local Linux desktop VMs for coding agents: lifecycle, accessibility-tree observation, semantic input, OCR, browser and terminal capture. Ships an omp/pi extension, an MCP server and an admin CLI.",
   "type": "module",
   "private": true,
   "license": "MIT",
-  "homepage": "https://github.com/mayask/pi-linux-computer#readme",
+  "homepage": "https://github.com/mayask/linux-computer#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/mayask/pi-linux-computer.git"
+    "url": "git+https://github.com/mayask/linux-computer.git"
   },
   "bugs": {
-    "url": "https://github.com/mayask/pi-linux-computer/issues"
+    "url": "https://github.com/mayask/linux-computer/issues"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "keywords": [
     "pi-package",
+    "omp",
+    "mcp",
     "computer-use",
     "accessibility",
+    "libvirt",
     "linux"
   ],
+  "bin": {
+    "linux-computer": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "src",
+    "guest",
+    "skills"
+  ],
+  "omp": {
+    "extensions": [
+      "./src/adapters/agent-extension.ts"
+    ],
+    "skills": [
+      "./skills"
+    ]
+  },
   "pi": {
     "extensions": [
-      "./src/extension.ts"
+      "./src/adapters/agent-extension.ts"
     ],
     "skills": [
       "./skills"
     ]
   },
   "scripts": {
-    "typecheck": "tsc --noEmit",
-    "test:remote": "./scripts/integration-test.sh"
-  },
-  "peerDependencies": {
-    "@earendil-works/pi-ai": "*",
-    "@earendil-works/pi-coding-agent": "*",
-    "typebox": "*"
+    "build": "tsc -p tsconfig.json",
+    "prepare": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test:vm": "./scripts/integration-test.sh"
   },
   "devDependencies": {
     "@types/node": "latest",

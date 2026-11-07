@@ -1,58 +1,42 @@
 ---
 name: linux-computer
-description: Control configured Linux VM desktops through SSH, AT-SPI accessibility, keyboard/mouse actions, and screenshots. Use when asked to operate, inspect, test, or automate a graphical Linux VM.
+description: Use this session's private Linux desktop VM (Debian 13, XFCE, Firefox, Chromium) to build, run and test apps end to end through the vm_* tools — accessibility-tree observation, semantic input, OCR, DOM-level browser control, terminal capture, snapshots, and hand-off to the user. Use when asked to test a GUI or web app, operate a desktop, or work in an isolated Linux machine.
 ---
 
 # Linux computer use
 
-Use the `linux_vm_*` tools for configured VM targets.
+Every agent session owns one VM. It is created on the first vm_* call (a few seconds; the first base image build on a machine takes about two minutes), keeps its disk and running apps across turns and harness restarts, is suspended to disk when the session ends, and resumes exactly where it was. Subagents share their parent's VM. Nothing is deleted unless the user asks for `vm_lifecycle destroy`.
 
-## Operating policy
+The user can watch the same screen live (`vm_lifecycle view`, opened automatically) and take part.
 
-1. Prefer `linux_vm_exec` when the task is fundamentally command-line, file, package, service, or diagnostic work.
-2. When visible desktop interaction is requested, call `linux_vm_observe` first.
-3. Select controls by current node ID, role, name, state, and accessible actions.
-4. Prefer `invoke`, `focus`, and `set_text` over coordinate clicks.
-5. Use `type` and `key` when an application does not expose an editable AT-SPI interface.
-6. Observe again after every state-changing action. Node IDs may become stale whenever the interface changes.
-7. Use `linux_vm_terminal_capture` for complete retained output from the last visible terminal command. Do not rerun a command merely to recover its output.
-8. Use `linux_vm_screenshot` only when the accessibility tree lacks required information or visual appearance matters.
-9. Never infer a destructive confirmation from stale state. Re-observe immediately before confirming destructive actions.
+## Reading the screen (cheapest first)
 
-## Common GUI sequence
+1. `vm_exec` output for anything you started from the shell.
+2. `vm_terminal_capture` for output in a visible terminal (tmux pane or Select All copy; never rerun the command).
+3. `vm_browser text|elements|eval` for pages in Chromium.
+4. `vm_observe` for any app: accessibility tree as text. Narrow it with `app`, `window`, `focusedWindow`, `find`.
+5. `vm_screen_text` (OCR) for canvases, images, games, inaccessible widgets.
+6. `vm_screenshot` only when appearance matters (layout, colors, rendering).
 
-To launch an application when it is not present in the tree:
+## Acting
 
-1. Send `Super_L` with `linux_vm_act` action `key`.
-2. Send the application name with action `type`.
-3. Send `Return` with action `key`.
-4. Wait briefly and observe again.
+- Take node ids from a fresh `vm_observe`; ids are paths and go stale when the UI changes.
+- `vm_act click` is a real pointer click at the node's center; `invoke` runs the accessible action without the pointer (useful off-screen; some widgets ignore it). `set_text` replaces editable text; `type`/`key` send keystrokes.
+- Observe again after every state change; re-observe right before anything destructive.
+- Launch apps with `vm_exec background=true` (e.g. `firefox-esr URL`, `xfce4-terminal`, your built binary). Foreground commands that leave processes running never return.
+- Web apps: `vm_browser open` starts Chromium; `elements` numbers interactive elements for `click`/`fill`; `eval` runs JavaScript. Firefox goes through `vm_observe`/`vm_act`.
+- Move code with `vm_copy` (tar stream, `exclude` for node_modules/target/.git). Keep the host repo as the source of truth.
 
-For terminal commands that the user explicitly wants typed visibly:
+## Working with the user
 
-1. Observe and locate the terminal.
-2. Focus or click its terminal node.
-3. Type the command.
-4. Send `Return`.
-5. Use `linux_vm_terminal_capture` to recover the command and complete retained output, including off-screen scrollback.
+Never fight the user for keyboard and mouse. When the user should try something in the VM:
 
-For terminals managed by the agent, start or attach to a named tmux session so output can be captured without touching the clipboard:
+1. Agree on it in chat.
+2. `vm_control to=user message="what to check"` (optionally `waitSeconds`). The VM shows a dialog; agent input is refused until control returns.
+3. The user clicks "Hand back to agent" in the VM, or tells you in chat; then `vm_control to=agent`.
+4. Observe before acting again: the screen may have changed.
 
-```bash
-tmux new -A -s pi-agent
-```
+## Safety nets
 
-`linux_vm_terminal_capture` in `auto` mode prefers a single active attached tmux pane. For an existing non-tmux terminal, it uses semantic Select All/copy, restores the previous text clipboard, and never reruns the command.
-
-## Fallback order
-
-Use this order to minimize cost and ambiguity:
-
-1. Direct command or managed PTY output when the agent initiated the command
-2. `tmux capture-pane` through `linux_vm_terminal_capture`
-3. AT-SPI accessibility tree
-4. Clipboard-preserving terminal capture for an existing non-tmux session
-5. Application API, D-Bus, or shell when appropriate
-6. OCR when available
-7. Screenshot and vision
-8. Raw coordinates only after visually or semantically locating the target
+- `vm_lifecycle snapshot name=...` before risky steps; `revert` to undo (disk and memory).
+- USB passthrough (`usb_list`, `usb_attach device=vendor:product`) takes the device away from the host; ask first.

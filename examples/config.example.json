@@ -1,0 +1,21 @@
+{
+  "memoryMiB": 4096,
+  "vcpus": 4,
+  "diskGiB": 64,
+  "width": 1600,
+  "height": 900,
+  "onSessionEnd": "suspend",
+  "openViewer": true,
+  "viewerCommand": ["vncviewer", "-Shared=1", "{socket}"],
+  "extraPackages": ["build-essential", "pkg-config"],
+  "targets": {
+    "old-desktop": {
+      "host": "127.0.0.1",
+      "port": 2222,
+      "user": "vmagent",
+      "identityFile": "~/.ssh/linux-vm-agent_ed25519",
+      "knownHostsFile": "~/.ssh/linux-vm-known_hosts",
+      "display": ":10"
+    }
+  }
+}
