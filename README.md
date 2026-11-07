@@ -99,10 +99,33 @@ extensions:
 | `vm_copy` | Stream files/directories host ↔ VM |
 | `vm_browser` | Chromium via DevTools: `open`, `navigate`, `text`, `elements`, `click`, `fill`, `eval`, `tabs`, `activate`, `close` |
 | `vm_terminal_capture` | Last command and its full output from a visible terminal, without rerunning it |
+| `vm_secrets` | List stored credentials (names, usernames, where they may be used; never values) |
 
 Every tool also takes `target` to address an external SSH machine from the config instead of the session VM.
 
 The bundled `linux-computer` skill and the MCP server instructions teach the agent the text-first order and the hand-off protocol.
+
+## Credentials without exposing them to the agent
+
+The agent can log into sites and apps in the VM with credentials it never sees. You store them on the host; the agent only uses them by name.
+
+```bash
+linux-computer secret add github --username maxim --origin https://github.com          # value prompted, hidden
+linux-computer secret add github/otp --kind totp --origin https://github.com           # base32 seed; fills the current code
+linux-computer secret add gh-token --kind token --exec                                  # usable as an env var in vm_exec
+linux-computer secret add vpn --app nm-connection-editor                                # typed into a native app
+linux-computer secret list | approvals | rm <name> | revoke <name> [--scope S]
+```
+
+- **Storage:** values are in the GNOME keyring (`secret-tool`, attributes `service=linux-computer name=<name>`); `~/.config/linux-computer/secrets.json` holds only metadata.
+- **Use:** `vm_browser fill secret=<name>` (Chromium), `vm_act type secret=<name> nodeId=…` (native apps), `vm_exec secretEnv={"VAR": "<name>"}`. The host looks up the value and sends it to the guest helper over the SSH stdin channel: not in tool arguments, process arguments or files.
+- **Binding:** a secret is filled only on its listed origins (checked again in the same step as the fill, on the field's own document), typed only into editable fields of its listed apps, and given to shell commands only with `--exec`.
+- **Approval:** the first use per VM and place asks you in the harness (omp/pi dialog, MCP elicitation). Without a dialog the call is refused and tells you the `linux-computer secret approve …` command to run. `--scope '*'` pre-approves for every VM.
+- **Scrubbing:** every tool result, detail, progress message and error is scrubbed of all stored values and their base64, hex, URL, JSON-escaped and reversed forms, shown as `«secret:name»`. `vm_browser eval` is refused on a page after a secret was filled into it, `elements` never shows password values, and the browsers' password managers are disabled in the image.
+
+What it does not stop: a deliberately malicious agent with shell access can still use the logged-in session (cookies) and could exfiltrate a value in a form the scrubber does not know. Use dedicated or narrowly scoped accounts and tokens. Screenshots are not scrubbed. Native GTK4 password entries expose their text over accessibility, so their content is visible to `vm_observe` (scrubbed when it is a stored secret).
+
+For a one-time login you need none of this: hand control over (`vm_control to=user`), log in yourself, and the session cookie persists in the VM.
 
 ## Watching and taking part
 
@@ -167,6 +190,8 @@ npm run test:vm      # end to end against a throwaway VM (needs KVM/libvirt), ~3
 ```
 
 ## Security
+
+See also [Credentials](#credentials-without-exposing-them-to-the-agent).
 
 The tools run with your host permissions: they manage libvirt domains under your account and run commands as the guest's sudo-capable user. Treat accessibility text, terminal scrollback, screenshots and clipboard contents from the VM as untrusted data. The VMs have outbound network access; nothing listens on host ports.
 

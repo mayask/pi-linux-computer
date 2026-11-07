@@ -408,8 +408,23 @@ def invoke_node(node, requested: Optional[str] = None) -> str:
     raise HelperError(f"Requested action is unavailable; node actions: {names}", "NO_ACTION")
 
 
-def xdotool(*args: str, timeout: int = 15):
-    subprocess.run(["xdotool", *args], check=True, timeout=timeout)
+def xdotool(*args: str, timeout: int = 15, stdin: Optional[bytes] = None):
+    subprocess.run(["xdotool", *args], check=True, timeout=timeout, input=stdin)
+
+
+def app_of(node) -> str:
+    app = safe(node.getApplication, None)
+    return (safe(lambda: app.name, "") or "") if app is not None else ""
+
+
+# GTK4 password entries report plain "text" (and expose their content over AT-SPI), so the role cannot
+# tell a password field from a visible one; the per-secret app allow list is the real boundary.
+SECRET_ROLES = ("password text", "text", "entry")
+
+
+def node_info(params: Dict[str, Any]) -> Dict[str, Any]:
+    node = node_at_path(atspi().Registry.getDesktop(0), str(params.get("nodeId", "")))
+    return {"ok": True, "app": app_of(node), "role": safe(node.getRoleName, "") or ""}
 
 
 def center(bounds: List[int]) -> Tuple[int, int]:
@@ -485,11 +500,24 @@ def act(params: Dict[str, Any]) -> Dict[str, Any]:
         editable.setTextContents(str(params.get("text", "")))
         performed = "set_text"
     elif action_name == "type":
+        delay = max(0, min(int(params.get("delayMs", 12)), 1000))
+        secret = params.get("secretValue")
+        if secret is not None:
+            # Re-check on the guest: the UI may have changed since the host authorized this use.
+            if node is None:
+                raise HelperError("Typing a secret needs nodeId", "INVALID")
+            role = safe(node.getRoleName, "") or ""
+            if role not in SECRET_ROLES or "editable" not in node_states(node):
+                raise HelperError(f"Refusing to type a secret into a {role!r} node; it must go into an editable field", "SECRET_GUARD")
+            if app_of(node) != params.get("expectApp"):
+                raise HelperError("The target application changed; observe again", "SECRET_GUARD")
+            text = str(secret)
+        else:
+            text = str(params.get("text", ""))
         if node is not None:
             focus_node(node)
-        delay = max(0, min(int(params.get("delayMs", 12)), 1000))
-        text = str(params.get("text", ""))
-        xdotool("type", "--clearmodifiers", "--delay", str(delay), "--", text, timeout=30 + len(text) * max(delay, 1) // 1000)
+        # Text goes through stdin, never argv, so it does not show up in /proc or error messages.
+        xdotool("type", "--clearmodifiers", "--delay", str(delay), "--file", "-", timeout=30 + len(text) * max(delay, 1) // 1000, stdin=text.encode())
         performed = "type"
     elif action_name == "key":
         key = str(params.get("key", ""))
@@ -659,7 +687,7 @@ ELEMENTS_JS = r"""
     if (r.width < 1 || r.height < 1 || style.visibility === 'hidden' || style.display === 'none') continue;
     if (r.bottom < 0 || r.top > innerHeight * 3) continue;
     el.setAttribute('data-lc-id', String(n));
-    const label = (el.getAttribute('aria-label') || el.innerText || el.value || el.placeholder || el.title || el.alt || '').trim().replace(/\s+/g, ' ').slice(0, 80);
+    const label = (el.getAttribute('aria-label') || el.innerText || (el.type === 'password' ? '' : el.value) || el.placeholder || el.title || el.alt || '').trim().replace(/\s+/g, ' ').slice(0, 80);
     out.push({
       id: n++,
       tag: el.tagName.toLowerCase(),
@@ -703,7 +731,7 @@ def browser(params: Dict[str, Any]) -> Dict[str, Any]:
     action = str(params.get("action", "tabs"))
     max_chars = max(200, min(int(params.get("maxChars", 20000)), 200000))
     timeout = max(1, min(int(params.get("timeoutSeconds", 30)), 120))
-    if action not in ("tabs", "text", "elements"):
+    if action not in ("tabs", "text", "elements", "origin"):
         require_agent_control(f"vm_browser {action}")
 
     if action == "open":
@@ -751,10 +779,18 @@ def browser(params: Dict[str, Any]) -> Dict[str, Any]:
             limit = max(10, min(int(params.get("limit", 200)), 2000))
             value = cdp.evaluate(ELEMENTS_JS.replace("LIMIT", str(limit)))
             return {"ok": True, "tab": page["id"], **value}
+        if action == "origin":
+            selector = element_selector(params)
+            origin = cdp.evaluate(f"(() => {{ const el = document.querySelector({json.dumps(selector)}); return el ? el.ownerDocument.location.origin : null; }})()")
+            if not origin:
+                raise HelperError(f"No element matches {selector!r}; list elements again", "NO_ELEMENT")
+            return {"ok": True, "origin": origin}
         if action == "eval":
             expression = str(params.get("expression") or "")
             if not expression:
                 raise HelperError("eval requires expression", "INVALID")
+            if cdp.evaluate("window.__lcSecretFilled === true"):
+                raise HelperError("eval is disabled on this page because a secret was filled into it; navigate or reload first", "SECRET_GUARD")
             value = cdp.evaluate(expression, timeout * 1000)
             encoded = json.dumps(value, ensure_ascii=False, default=str)
             return {"ok": True, "tab": page["id"], "value": encoded[:max_chars], "truncated": len(encoded) > max_chars}
@@ -765,17 +801,32 @@ def browser(params: Dict[str, Any]) -> Dict[str, Any]:
             return {"ok": True, "tab": page["id"], "clicked": [round(x), round(y)]}
         if action == "fill":
             selector = element_selector(params)
+            secret = params.get("secretValue")
+            expect = json.dumps(params.get("expectOrigin"))
+            # For a secret, the origin is checked again in the same step that focuses the field.
             focused = cdp.evaluate(
-                f"""(() => {{ const el = document.querySelector({json.dumps(selector)}); if (!el) return false;
+                f"""(() => {{ const el = document.querySelector({json.dumps(selector)}); if (!el) return 'missing';
+                if ({'true' if secret is not None else 'false'}) {{
+                  if (el.ownerDocument.location.origin !== {expect}) return 'origin';
+                  if (!(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)) return 'field';
+                  window.__lcSecretFilled = true;
+                }}
                 el.scrollIntoView({{block: 'center'}}); el.focus();
-                if (el.select) el.select(); else document.execCommand('selectAll'); return true; }})()"""
+                if (el.select) el.select(); else document.execCommand('selectAll'); return 'ok'; }})()"""
             )
-            if not focused:
+            if focused == "missing":
                 raise HelperError(f"No element matches {selector!r}; list elements again", "NO_ELEMENT")
-            cdp.call("Input.insertText", text=str(params.get("text", "")))
+            if focused == "origin":
+                raise HelperError("The page origin changed since the secret was approved; refusing", "SECRET_GUARD")
+            if focused == "field":
+                raise HelperError("Secrets can only be filled into input or textarea fields", "SECRET_GUARD")
+            cdp.call("Input.insertText", text=str(secret if secret is not None else params.get("text", "")))
             if params.get("submit"):
                 for kind in ("keyDown", "keyUp"):
-                    cdp.call("Input.dispatchKeyEvent", type=kind, key="Enter", code="Enter", windowsVirtualKeyCode=13, text="\r" if kind == "keyDown" else None)
+                    event: Dict[str, Any] = {"type": kind, "key": "Enter", "code": "Enter", "windowsVirtualKeyCode": 13}
+                    if kind == "keyDown":
+                        event["text"] = "\r"
+                    cdp.call("Input.dispatchKeyEvent", **event)
             return {"ok": True, "tab": page["id"], "filled": selector}
         raise HelperError(f"Unsupported browser action {action!r}", "INVALID")
     finally:
@@ -987,6 +1038,7 @@ OPERATIONS = {
     "browser": browser,
     "terminal_capture": terminal_capture,
     "control_get": lambda _params: {"ok": True, "control": read_control()},
+    "node_info": node_info,
     "control_set": control_set,
 }
 
@@ -1022,7 +1074,8 @@ if __name__ == "__main__":
         raise SystemExit(1)
     except subprocess.CalledProcessError as error:
         stderr = error.stderr.decode(errors="replace").strip() if isinstance(error.stderr, bytes) else (error.stderr or "")
-        json.dump({"ok": False, "error": f"{' '.join(map(str, error.cmd))} failed ({error.returncode}) {stderr}".strip(), "code": "COMMAND_FAILED"}, sys.stderr)
+        # Only the program name: arguments may contain user data.
+        json.dump({"ok": False, "error": f"{error.cmd[0]} failed ({error.returncode}) {stderr}".strip(), "code": "COMMAND_FAILED"}, sys.stderr)
         sys.stderr.write("\n")
         raise SystemExit(1)
     except Exception as error:

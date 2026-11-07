@@ -6,6 +6,7 @@ import { run, shellQuote, sleep } from "./exec.js";
 import * as libvirt from "./libvirt.js";
 import { toPng } from "./png.js";
 import { externalEndpoint, HELPER_PATH, helperCall, ssh, sshPipe, type Endpoint } from "./ssh.js";
+import { authorize, loadApprovals, loadSecretMeta, redactor, resolveValue, type Confirm } from "./secrets.js";
 import {
   describeStatus,
   destroyVm,
@@ -38,6 +39,8 @@ export interface ToolContext {
   cwd: string;
   signal?: AbortSignal;
   progress?: (message: string) => void;
+  /** Out-of-band question to the human (never the model); enables secret approvals. */
+  confirm?: Confirm;
 }
 
 export type JsonSchema = Record<string, unknown>;
@@ -52,8 +55,30 @@ export interface ToolSpec {
 }
 
 function defineTool<P>(spec: Omit<ToolSpec, "execute"> & { execute(params: P, ctx: ToolContext): Promise<ToolResult> }): ToolSpec {
-  // The harness validated the arguments against `parameters`, which mirrors P.
-  return { ...spec, execute: (params, ctx) => spec.execute(params as P, ctx) };
+  return {
+    ...spec,
+    async execute(params, ctx) {
+      // Everything leaving a tool (results, details, progress, errors) is scrubbed of secret values,
+      // whatever path they took into the VM.
+      const before = await redactor();
+      const progress = ctx.progress && ((message: string) => ctx.progress!(before(message)));
+      let result: ToolResult;
+      try {
+        // The harness validated the arguments against `parameters`, which mirrors P.
+        result = await spec.execute(params as P, { ...ctx, progress });
+      } catch (error) {
+        throw new Error((await redactor())(error instanceof Error ? error.message : String(error)));
+      }
+      // Rebuilt after the call: it may have resolved values (TOTP codes) the earlier one did not know.
+      const scrub = await redactor();
+      if (scrub.empty) return result;
+      return {
+        ...result,
+        content: result.content.map((part) => (part.type === "text" ? { ...part, text: scrub(part.text) } : part)),
+        details: result.details && (JSON.parse(scrub(JSON.stringify(result.details))) as Record<string, unknown>),
+      };
+    },
+  };
 }
 
 const MAX_TEXT = 48_000;
@@ -116,6 +141,11 @@ async function readControl(g: Guest, ctx: ToolContext): Promise<ControlState> {
   const { control } = await helperCall<{ control: ControlState }>(g.endpoint, "control_get", {}, { signal: ctx.signal });
   rememberControl(g.record, control);
   return control;
+}
+
+/** Approvals are per VM: the session's scope, or the external target. */
+function approvalScope(params: Targeted, ctx: ToolContext): string {
+  return params.target ? `target:${params.target}` : ctx.scope.id;
 }
 
 /** Drop the adapter-level `target` before forwarding parameters to the guest helper. */
@@ -257,6 +287,23 @@ async function usbChange(domain: string, attach: boolean, device: string): Promi
     rmSync(dir, { recursive: true, force: true });
   }
 }
+
+const secretsTool = defineTool<Targeted & { action: "list" }>({
+  name: "vm_secrets",
+  label: "List usable secrets",
+  description:
+    "List credentials the user stored for you: name, kind (password, token, totp), username, and where each may be used (browser origins, apps, shell). You never see values. Use them by name: vm_browser fill secret=<name> on an allowed origin, vm_act type secret=<name> into a password field of an allowed app, vm_exec secretEnv={VAR: <name>} when shell use is allowed. A totp secret fills the current one-time code. The first use per VM and place asks the user to approve.",
+  parameters: object({ action: oneOf(["list"], "Only list") }, ["action"]),
+  async execute(params, ctx) {
+    const scope = approvalScope(params, ctx);
+    const lines = Object.entries(loadSecretMeta()).map(([name, meta]) => {
+      const uses = [...(meta.origins ?? []).map((o) => `browser ${o}`), ...(meta.apps ?? []).map((a) => `app ${a}`), ...(meta.exec ? ["shell"] : [])];
+      const approved = loadApprovals().filter((a) => a.secret === name && (a.scope === scope || a.scope === "*")).map((a) => a.use);
+      return `${name}  ${meta.kind}${meta.username ? `  user=${meta.username}` : ""}  uses: ${uses.join(", ") || "none"}${approved.length ? `  approved here: ${approved.join(", ")}` : ""}${meta.description ? `  — ${meta.description}` : ""}`;
+    });
+    return text(lines.length ? lines.join("\n") : "No secrets stored. The user adds them on the host with `linux-computer secret add <name>`.");
+  },
+});
 
 const LIFECYCLE_ACTIONS = ["status", "start", "view", "suspend", "stop", "restart", "snapshot", "revert", "snapshots", "delete_snapshot", "usb_list", "usb_attach", "usb_detach", "destroy"] as const;
 
@@ -439,6 +486,7 @@ const actTool = defineTool<ActParams>({
       nodeId: str("Node id from the latest vm_observe"),
       accessibleAction: str("Exact AT-SPI action name when a node exposes several"),
       text: str("Text for type or set_text"),
+      secret: str("Name of a stored secret to type instead of text (action=type with nodeId of a password field); the value is never shown to you"),
       key: str("Key chord(s) for key, space separated"),
       x: int("Screen x for pointer actions"),
       y: int("Screen y for pointer actions"),
@@ -454,12 +502,21 @@ const actTool = defineTool<ActParams>({
   ),
   async execute(params, ctx) {
     const g = await guest(params, ctx);
-    const result = await helperCall<{ performed: string; node?: { id: string; role: string; name: string } }>(g.endpoint, "act", helperParams(params), {
+    let forward: Record<string, unknown> = helperParams(params);
+    if (typeof params.secret === "string") {
+      if (params.action !== "type" || !params.nodeId) throw new Error("secret works with action=type and the nodeId of the field to type into");
+      const node = await helperCall<{ app: string; role: string }>(g.endpoint, "node_info", { nodeId: params.nodeId }, { signal: ctx.signal });
+      const meta = await authorize(params.secret, approvalScope(params, ctx), g.label, { via: "app", app: node.app }, ctx.confirm);
+      const { secret: _secret, text: _text, ...rest } = forward;
+      forward = { ...rest, secretValue: await resolveValue(params.secret, meta), secretKind: meta.kind, expectApp: node.app };
+    }
+    const result = await helperCall<{ performed: string; node?: { id: string; role: string; name: string } }>(g.endpoint, "act", forward, {
       signal: ctx.signal,
       timeoutMs: 120_000,
     });
     const node = result.node;
-    return text(`${result.performed}${node ? ` on [${node.id}] ${node.role} ${JSON.stringify(node.name)}` : ""}`, { vm: g.label, ...result });
+    const what = typeof params.secret === "string" ? ` «secret:${params.secret}»` : "";
+    return text(`${result.performed}${what}${node ? ` on [${node.id}] ${node.role} ${JSON.stringify(node.name)}` : ""}`, { vm: g.label, ...result });
   },
 });
 
@@ -522,6 +579,7 @@ interface ExecParams extends Targeted {
   timeoutSeconds?: number;
   background?: boolean;
   cwd?: string;
+  secretEnv?: Record<string, string>;
 }
 
 const execTool = defineTool<ExecParams>({
@@ -535,6 +593,11 @@ const execTool = defineTool<ExecParams>({
       timeoutSeconds: int("Timeout for foreground commands", 1, 3600, 120),
       background: bool("Detach and return immediately", false),
       cwd: str("Guest working directory (default: home)"),
+      secretEnv: {
+        type: "object",
+        additionalProperties: { type: "string" },
+        description: "Environment variables filled from stored secrets, e.g. {\"GH_TOKEN\": \"github/token\"}; only for secrets with exec allowed. Output is scrubbed of the values.",
+      },
     },
     ["command"],
   ),
@@ -542,16 +605,29 @@ const execTool = defineTool<ExecParams>({
     const g = await guest(params, ctx);
     const cd = params.cwd ? `cd ${shellQuote(params.cwd)} && ` : "";
     const env = `eval "$(python3 ${HELPER_PATH} --env)"`;
+    // Secret values travel on stdin as NUL-separated VAR=value records, never in argv or on disk.
+    let input = "";
+    let readSecrets = "";
+    for (const [variable, name] of Object.entries(params.secretEnv ?? {})) {
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(variable)) throw new Error(`Invalid environment variable name ${variable}`);
+      const meta = await authorize(name, approvalScope(params, ctx), g.label, { via: "exec" }, ctx.confirm);
+      input += `${variable}=${await resolveValue(name, meta)}\0`;
+    }
+    if (input) {
+      input += "\0";
+      readSecrets = `while IFS= read -r -d '' kv && [ -n "$kv" ]; do export "$kv"; done; `;
+    }
     if (params.background) {
       const log = `.local/state/linux-computer/bg-${Date.now().toString(36)}.log`;
       // systemd-run moves the job into the guest user's manager, so it outlives this SSH connection.
-      const script = `${env}; mkdir -p .local/state/linux-computer; ${cd}nohup systemd-run --user --scope --quiet --collect -- bash -lc ${shellQuote(params.command)} > ~/${log} 2>&1 < /dev/null & echo $!`;
-      const result = await ssh(g.endpoint, `bash -c ${shellQuote(script)}`, { signal: ctx.signal, timeoutMs: 30_000 });
+      const script = `${readSecrets}${env}; mkdir -p .local/state/linux-computer; ${cd}nohup systemd-run --user --scope --quiet --collect -- bash -lc ${shellQuote(params.command)} > ~/${log} 2>&1 < /dev/null & echo $!`;
+      const result = await ssh(g.endpoint, `bash -c ${shellQuote(script)}`, { input, signal: ctx.signal, timeoutMs: 30_000 });
       if (result.exitCode !== 0) throw new Error(`Background start failed: ${result.stderr.toString("utf8")}`);
       const pid = Number(result.stdout.toString("utf8").trim());
-      return text(`started pid ${pid}; output: ~/${log}`, { vm: g.label, pid, log: `~/${log}` });
+      return text(`started pid ${pid}; output: ~/${log} (read it with vm_exec; secret values are scrubbed)`, { vm: g.label, pid, log: `~/${log}` });
     }
-    const result = await ssh(g.endpoint, `bash -lc ${shellQuote(`${env}; ${cd}${params.command}`)}`, {
+    const result = await ssh(g.endpoint, `bash -c ${shellQuote(`${readSecrets}exec bash -lc ${shellQuote(`${env}; ${cd}${params.command}`)}`)}`, {
+      input,
       signal: ctx.signal,
       timeoutMs: (params.timeoutSeconds ?? 120) * 1000,
     });
@@ -646,6 +722,7 @@ const browserTool = defineTool<BrowserParams>({
       element: int("Element number from the latest elements call"),
       selector: str("CSS selector (alternative to element)"),
       text: str("Text for fill"),
+      secret: str("Name of a stored secret to fill instead of text; only allowed on the secret's origins, the value is never shown to you"),
       submit: bool("Press Enter after fill", false),
       expression: str("JavaScript for eval"),
       limit: int("Max elements", 10, 2000, 200),
@@ -656,7 +733,15 @@ const browserTool = defineTool<BrowserParams>({
   ),
   async execute(params, ctx) {
     const g = await guest(params, ctx);
-    const result = await helperCall<BrowserResult>(g.endpoint, "browser", helperParams(params), { signal: ctx.signal, timeoutMs: 180_000 });
+    let forward: Record<string, unknown> = helperParams(params);
+    if (typeof params.secret === "string") {
+      if (params.action !== "fill") throw new Error("secret works with action=fill");
+      const { secret: _secret, text: _text, ...rest } = forward;
+      const target = await helperCall<{ origin: string }>(g.endpoint, "browser", { ...rest, action: "origin" }, { signal: ctx.signal, timeoutMs: 60_000 });
+      const meta = await authorize(params.secret, approvalScope(params, ctx), g.label, { via: "browser", origin: target.origin }, ctx.confirm);
+      forward = { ...rest, secretValue: await resolveValue(params.secret, meta), expectOrigin: target.origin };
+    }
+    const result = await helperCall<BrowserResult>(g.endpoint, "browser", forward, { signal: ctx.signal, timeoutMs: 180_000 });
     switch (params.action) {
       case "tabs":
         return text(result.tabs?.length ? result.tabs.map((t) => `${t.index} ${t.id} ${JSON.stringify(t.title)} ${t.url}`).join("\n") : (result.note ?? "no tabs"), { vm: g.label });
@@ -731,6 +816,7 @@ const terminalTool = defineTool<TerminalParams>({
 export const TOOLS: readonly ToolSpec[] = [
   lifecycleTool,
   controlTool,
+  secretsTool,
   observeTool,
   actTool,
   screenTextTool,
@@ -747,5 +833,6 @@ export const INSTRUCTIONS = `linux-computer gives this session its own persisten
 - Act on nodes: vm_act click/set_text/type/key with node ids from a fresh vm_observe (raw coordinates only for canvases or OCR hits). Observe again after each state change.
 - Web apps: vm_browser drives Chromium at DOM level (elements, click, fill, eval). Firefox works through vm_observe/vm_act.
 - Commands, builds, files: vm_exec (desktop env set; background=true for GUI/long jobs) and vm_copy.
+- Credentials: never ask the user to paste passwords or tokens into chat. vm_secrets list shows what is stored; use them by name (vm_browser fill secret=, vm_act type secret=, vm_exec secretEnv=). Values never reach you and appear as «secret:name» if they show up anywhere.
 - Never fight the user for input. When the user should test or do something in the VM, agree in chat, then vm_control to='user' (optionally waitSeconds). Input is blocked until they hand back.
 - The VM persists until destroyed; vm_lifecycle snapshot before risky steps, revert to undo. Destroy only on explicit request.`;

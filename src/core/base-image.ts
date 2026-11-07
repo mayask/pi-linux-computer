@@ -12,7 +12,7 @@ import { ensureDir, paths } from "./paths.js";
 import { ensureClientKey } from "./ssh.js";
 
 /** Bump whenever guest/provision.sh changes in a way existing bases should not be reused for. */
-export const PROVISION_VERSION = 3;
+export const PROVISION_VERSION = 4;
 export const GUEST_USER = "agent";
 
 export interface BaseInfo {

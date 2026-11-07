@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.4.0
+
+### Added
+
+- Credentials the agent uses without seeing them: `linux-computer secret add|list|rm|approve|revoke|approvals`, values in the GNOME keyring, metadata in `~/.config/linux-computer/secrets.json`.
+- `vm_secrets list`; `secret` parameter on `vm_browser fill` and `vm_act type`; `secretEnv` on `vm_exec`. TOTP secrets fill the current code.
+- Use binding (browser origins, native apps, shell opt-in) and first-use approval per VM and place through the harness UI (omp/pi `ui.confirm`, MCP elicitation); CLI pre-approval otherwise.
+- Central scrubbing of stored values and common encodings from every tool result, detail, progress message and error.
+
+### Changed
+
+- `vm_browser eval` is refused on a page after a secret was filled into it; `elements` omits password field values.
+- `vm_act type` sends text to xdotool on stdin instead of argv; helper command errors name only the program, not its arguments.
+- Base image (provision v4) disables the Chromium and Firefox password managers; existing VMs keep their base.
+
 ## 0.3.0
 
 Harness-agnostic rewrite with managed per-session VMs. Package renamed to `linux-computer`.

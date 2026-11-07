@@ -36,6 +36,16 @@ Never fight the user for keyboard and mouse. When the user should try something 
 3. The user clicks "Hand back to agent" in the VM, or tells you in chat; then `vm_control to=agent`.
 4. Observe before acting again: the screen may have changed.
 
+## Credentials
+
+Never ask the user to paste a password or token into chat. `vm_secrets list` shows stored credentials (names, usernames, allowed origins/apps/shell); use them by name:
+
+- Web: `vm_browser fill selector=... secret=<name>` on an allowed origin, then submit. `eval` is refused on that page afterwards.
+- Native apps: `vm_act type nodeId=<password field> secret=<name>`.
+- CLIs: `vm_exec secretEnv={"TOKEN": "<name>"}`.
+
+The first use per VM and place asks the user to approve. Values appear as `«secret:name»` wherever they would show up. If nothing fits, ask the user to add one (`linux-computer secret add`) or to log in themselves via `vm_control to=user`.
+
 ## Safety nets
 
 - `vm_lifecycle snapshot name=...` before risky steps; `revert` to undo (disk and memory).

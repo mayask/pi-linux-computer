@@ -78,11 +78,18 @@ progress "configuring browsers"
 cat > /etc/chromium.d/linux-computer <<'EOF'
 export CHROMIUM_FLAGS="$CHROMIUM_FLAGS --force-renderer-accessibility --remote-debugging-port=9222 --remote-allow-origins=* --no-first-run --no-default-browser-check --password-store=basic --disable-features=Translate"
 EOF
+# Credentials filled by the agent must not be saved in plaintext browser profiles.
+mkdir -p /etc/chromium/policies/managed
+cat > /etc/chromium/policies/managed/linux-computer.json <<'EOF'
+{ "PasswordManagerEnabled": false, "AutofillAddressEnabled": false, "AutofillCreditCardEnabled": false }
+EOF
 mkdir -p /etc/firefox-esr/policies
 cat > /etc/firefox-esr/policies/policies.json <<'EOF'
 {
   "policies": {
     "DisableTelemetry": true,
+    "PasswordManagerEnabled": false,
+    "OfferToSaveLogins": false,
     "DisableDefaultBrowserAgent": true,
     "DontCheckDefaultBrowser": true,
     "OverrideFirstRunPage": "",

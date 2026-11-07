@@ -79,6 +79,8 @@ export default function linuxComputer(pi: ExtensionApiLike): void {
           cwd: ctx.cwd,
           signal,
           progress: (message) => onUpdate?.({ content: [{ type: "text", text: message }] }),
+          // Approval dialogs go to the human through the harness UI, never through the model.
+          confirm: ctx.hasUI !== false && ctx.ui.confirm ? (title, message) => ctx.ui.confirm!(title, message) : undefined,
         });
         void refreshStatus(ctx).catch(() => undefined);
         return result;
